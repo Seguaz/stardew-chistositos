@@ -16,10 +16,6 @@ dist-ssr
 src-tauri/target/
 src-tauri/gen/
 
-# never publish AI/editor traces
-.claude/
-CLAUDE.md
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
