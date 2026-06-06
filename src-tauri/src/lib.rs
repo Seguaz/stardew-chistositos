@@ -20,6 +20,8 @@ struct Manifest {
     size_bytes: u64,
     #[serde(default)]
     mods: Vec<String>,
+    #[serde(default, rename = "smapiSha")]
+    smapi_sha: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -81,8 +83,21 @@ fn smapi_path(game_dir: &str) -> PathBuf {
     Path::new(game_dir).join("StardewModdingAPI")
 }
 
+/// A valid Stardew folder — detected by the base game (so it works even before SMAPI is installed).
 fn is_game_dir(p: &Path) -> bool {
-    p.join("StardewModdingAPI.exe").is_file() || p.join("StardewModdingAPI").is_file()
+    p.join("Stardew Valley.dll").is_file()
+        || p.join("StardewModdingAPI.exe").is_file()
+        || p.join("StardewModdingAPI").is_file()
+}
+
+fn os_key() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    }
 }
 
 /// Launcher's own persisted config (game dir + account session).
@@ -96,6 +111,8 @@ struct LauncherCfg {
     username: Option<String>,
     #[serde(default)]
     role: Option<String>,
+    #[serde(default)]
+    smapi_installed: Option<String>,
     // game startup options the launcher controls (None = don't touch)
     #[serde(default)]
     lang: Option<String>,
@@ -640,6 +657,14 @@ fn extract_zip(app: &AppHandle, zip_path: &Path, mods_dir: &Path) -> Result<(), 
         }
         let mut out = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
         std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+        drop(out);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Some(mode) = entry.unix_mode() {
+                let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(mode));
+            }
+        }
         if i % 15 == 0 || i + 1 == count {
             let pct = ((i + 1) as f64 / count as f64) * 100.0;
             emit(app, "install", &format!("Instalando… {}/{}", i + 1, count), pct);
@@ -660,6 +685,80 @@ fn sha256_file(path: &Path) -> std::io::Result<String> {
         hasher.update(&buf[..n]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Ensure SMAPI is installed and matches the required version. Installs/updates it
+/// by extracting the OS-specific install.dat into the game folder. Safe no-op if current.
+#[tauri::command]
+async fn ensure_smapi(app: AppHandle, game_dir: String) -> Result<String, String> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let manifest = fetch_manifest().await?;
+    let want = manifest.smapi.clone();
+    if want.is_empty() {
+        return Ok("skip".into());
+    }
+    let cfg = read_cfg();
+    let present = smapi_path(&game_dir).is_file();
+    if present && cfg.smapi_installed.as_deref() == Some(want.as_str()) {
+        return Ok("ok".into());
+    }
+
+    emit(&app, "smapi", &format!("Instalando SMAPI {}…", want), -1.0);
+    let os = os_key();
+    let url = format!("{}smapi-{}.dat", BASE_URL, os);
+    let tmp = std::env::temp_dir().join("chistositos_smapi.dat");
+
+    let resp = reqwest::get(&url)
+        .await
+        .map_err(|e| format!("No se pudo descargar SMAPI: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("SMAPI no disponible ({})", resp.status()));
+    }
+    let mut f = tokio::fs::File::create(&tmp)
+        .await
+        .map_err(|e| format!("No se pudo crear archivo temporal: {e}"))?;
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Conexión interrumpida: {e}"))?;
+        f.write_all(&chunk).await.map_err(|e| e.to_string())?;
+    }
+    f.flush().await.ok();
+    drop(f);
+
+    if let Some(expected) = manifest.smapi_sha.get(os) {
+        let got = sha256_file(&tmp).map_err(|e| e.to_string())?;
+        if !got.eq_ignore_ascii_case(expected) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err("SMAPI: el hash no coincide (descarga corrupta).".into());
+        }
+    }
+
+    emit(&app, "smapi", "Instalando SMAPI…", -1.0);
+    let app2 = app.clone();
+    let tmp2 = tmp.clone();
+    let gd = PathBuf::from(&game_dir);
+    tokio::task::spawn_blocking(move || extract_zip(&app2, &tmp2, &gd))
+        .await
+        .map_err(|e| format!("Error interno: {e}"))??;
+    let _ = std::fs::remove_file(&tmp);
+
+    // make sure the SMAPI launcher is executable on macOS/Linux
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = Path::new(&game_dir).join("StardewModdingAPI");
+        if bin.is_file() {
+            let _ = std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    let mut c = read_cfg();
+    c.smapi_installed = Some(want);
+    write_cfg(&c);
+    emit(&app, "smapi", "SMAPI listo.", -1.0);
+    Ok("installed".into())
 }
 
 /// Launch SMAPI and return immediately.
@@ -707,6 +806,7 @@ pub fn run() {
             open_url,
             get_prefs,
             set_prefs,
+            ensure_smapi,
             check_updates,
             update_mods,
             launch_game

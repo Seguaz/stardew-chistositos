@@ -130,7 +130,9 @@ export default function App() {
   const handlePlay = async () => {
     if (!check?.game_dir) { setView("settings"); return; }
     try {
-      if (flow === "update") { setFlow("working"); setPercent(-1); setMessage("Preparando…"); await invoke("update_mods", { gameDir: check.game_dir }); }
+      setFlow("working"); setPercent(-1); setMessage("Preparando…");
+      await invoke("ensure_smapi", { gameDir: check.game_dir });
+      if (check.needs_update) { setPercent(-1); setMessage("Actualizando mods…"); await invoke("update_mods", { gameDir: check.game_dir }); }
       setFlow("launching"); setMessage("Iniciando Stardew Valley…"); setPercent(100);
       await invoke("launch_game", { gameDir: check.game_dir });
       setMessage("¡A jugar!");
@@ -139,7 +141,7 @@ export default function App() {
   };
   const handleSetPath = async () => {
     const cleaned = await invoke<string | null>("validate_game_dir", { path: pathInput });
-    if (cleaned) { setError(null); runCheck(cleaned); setView("home"); } else setError("Esa carpeta no tiene StardewModdingAPI.exe.");
+    if (cleaned) { setError(null); runCheck(cleaned); setView("home"); } else setError("Esa carpeta no parece de Stardew Valley.");
   };
   const handleForceUpdate = async () => {
     if (!check?.game_dir) return;
