@@ -2,6 +2,9 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { check as checkUpdate, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { Download } from "lucide-react";
 import gsap from "gsap";
 import hero from "./assets/hero.png";
 import logo from "./assets/logo.png";
@@ -53,10 +56,15 @@ export default function App() {
   const [prefs, setPrefs] = useState<GamePrefs>({ lang: "es", music: true, fullscreen: false });
   const [langOpen, setLangOpen] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
+  const [appUpdate, setAppUpdate] = useState<{ version: string } | null>(null);
+  const [updating, setUpdating] = useState(false);
+  const [updPct, setUpdPct] = useState(0);
+  const [updErr, setUpdErr] = useState("");
 
   const brandRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const updateRef = useRef<Update | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -64,6 +72,30 @@ export default function App() {
       setAuthChecked(true);
     })();
   }, []);
+
+  // self-update: check for a newer launcher release on open
+  useEffect(() => {
+    (async () => {
+      try {
+        const u = await checkUpdate();
+        if (u) { updateRef.current = u; setAppUpdate({ version: u.version }); }
+      } catch { /* offline or no update available */ }
+    })();
+  }, []);
+
+  const doSelfUpdate = async () => {
+    const u = updateRef.current;
+    if (!u || updating) return;
+    setUpdating(true); setUpdErr(""); setUpdPct(0);
+    try {
+      let total = 0, got = 0;
+      await u.downloadAndInstall((ev) => {
+        if (ev.event === "Started") total = ev.data.contentLength ?? 0;
+        else if (ev.event === "Progress") { got += ev.data.chunkLength; if (total) setUpdPct(Math.min(100, Math.round((got / total) * 100))); }
+      });
+      await relaunch();
+    } catch (e) { setUpdErr(String(e)); setUpdating(false); }
+  };
 
   const runCheck = useCallback(async (dir?: string | null) => {
     setFlow("checking"); setMessage("Comprobando actualizaciones…");
@@ -194,6 +226,18 @@ export default function App() {
       <button className="wb wb-close" onClick={() => getCurrentWindow().close()}><X size={16} strokeWidth={3} /></button>
     </div>
   );
+  const updateBar = appUpdate ? (
+    <div className="update-bar">
+      <Download size={15} />
+      {updating ? (
+        <span>Actualizando launcher{updPct > 0 ? ` · ${updPct}%` : "…"}</span>
+      ) : updErr ? (
+        <><span className="upd-err">No se pudo actualizar</span><button className="upd-btn" onClick={doSelfUpdate}>Reintentar</button></>
+      ) : (
+        <><span>Actualización del launcher disponible (v{appUpdate.version})</span><button className="upd-btn" onClick={doSelfUpdate}>Actualizar y reiniciar</button></>
+      )}
+    </div>
+  ) : null;
 
   if (!authChecked) {
     return (<div className="app"><Bg /><div className="auth"><span className="auth-loading">Cargando…</span></div></div>);
@@ -203,6 +247,7 @@ export default function App() {
     return (
       <div className="app">
         <Bg />
+        {updateBar}
         <header className="topbar" data-tauri-drag-region><WinBtns /></header>
         <div className="auth">
           <div className="auth-card">
@@ -230,6 +275,7 @@ export default function App() {
   return (
     <div className="app">
       <Bg />
+      {updateBar}
 
       <header className="topbar" data-tauri-drag-region>
         <div className="profile">

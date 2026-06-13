@@ -224,6 +224,22 @@ input.inp:focus { border-color: var(--accent); }
 .lang-menu::-webkit-scrollbar { width: 8px; }
 .lang-menu::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.18); border-radius: 8px; }
 
+/* ---- self-update banner ---- */
+.update-bar {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 60;
+  display: flex; align-items: center; gap: 10px; padding: 9px 14px;
+  background: rgba(18, 24, 38, 0.92); border: 1px solid var(--accent); border-radius: 999px;
+  backdrop-filter: blur(14px); box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  font-size: 13px; font-weight: 600; color: var(--text); max-width: 92%;
+}
+.update-bar svg { color: var(--accent); flex: 0 0 auto; }
+.update-bar .upd-err { color: #ff9a93; }
+.upd-btn {
+  border: none; background: var(--accent); color: #fff; font-weight: 700; font-size: 12.5px;
+  padding: 6px 12px; border-radius: 999px; transition: .12s;
+}
+.upd-btn:hover { background: var(--accent-d); }
+
 /* ---- login ---- */
 .auth { position: relative; z-index: 12; flex: 1; display: grid; place-items: center; padding: 20px; }
 .auth-card { width: 100%; max-width: 380px; background: var(--glass-2); border: 1px solid var(--border-2); border-radius: 18px; backdrop-filter: blur(20px); padding: 28px; box-shadow: 0 24px 60px rgba(0,0,0,.55); }
