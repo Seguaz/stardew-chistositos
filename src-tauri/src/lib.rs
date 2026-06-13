@@ -179,6 +179,15 @@ fn write_saved_game_dir(dir: &str) {
 struct Account {
     username: String,
     role: String,
+    avatar: Option<String>,
+}
+
+/// Pull the avatar from a server `user` JSON object (None if missing/empty).
+fn parse_avatar(v: &serde_json::Value) -> Option<String> {
+    v["user"]["avatar"]
+        .as_str()
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
 }
 
 async fn auth_call(kind: &str, username: String, password: String) -> Result<Account, String> {
@@ -200,12 +209,13 @@ async fn auth_call(kind: &str, username: String, password: String) -> Result<Acc
     let token = v["token"].as_str().unwrap_or("").to_string();
     let uname = v["user"]["username"].as_str().unwrap_or("").to_string();
     let role = v["user"]["role"].as_str().unwrap_or("user").to_string();
+    let avatar = parse_avatar(&v);
     let mut cfg = read_cfg();
     cfg.token = Some(token);
     cfg.username = Some(uname.clone());
     cfg.role = Some(role.clone());
     write_cfg(&cfg);
-    Ok(Account { username: uname, role })
+    Ok(Account { username: uname, role, avatar })
 }
 
 /// Log in with an existing account.
@@ -238,6 +248,33 @@ async fn account_me() -> Option<Account> {
     Some(Account {
         username: v["user"]["username"].as_str()?.to_string(),
         role: v["user"]["role"].as_str().unwrap_or("user").to_string(),
+        avatar: parse_avatar(&v),
+    })
+}
+
+/// Upload a new profile photo (a data: URL, already resized client-side) and return the updated account.
+#[tauri::command]
+async fn account_set_avatar(data_url: String) -> Result<Account, String> {
+    let token = read_cfg().token.ok_or("No has iniciado sesión")?;
+    let resp = reqwest::Client::new()
+        .put(format!("{}api/me/avatar", BASE_URL))
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "avatar": data_url }))
+        .send()
+        .await
+        .map_err(|e| format!("No se pudo conectar al servidor: {e}"))?;
+    let ok = resp.status().is_success();
+    let v: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Respuesta inválida: {e}"))?;
+    if !ok {
+        return Err(v["error"].as_str().unwrap_or("Error desconocido").to_string());
+    }
+    Ok(Account {
+        username: v["user"]["username"].as_str().unwrap_or("").to_string(),
+        role: v["user"]["role"].as_str().unwrap_or("user").to_string(),
+        avatar: parse_avatar(&v),
     })
 }
 
@@ -803,6 +840,7 @@ pub fn run() {
             account_register,
             account_me,
             account_logout,
+            account_set_avatar,
             open_url,
             get_prefs,
             set_prefs,

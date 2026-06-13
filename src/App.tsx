@@ -8,7 +8,7 @@ import logo from "./assets/logo.png";
 import michi from "./assets/michi.png";
 import {
   Home, LayoutGrid, Settings, Play, Folder, RefreshCw, Minus, X,
-  ChevronDown, LogOut, ExternalLink, Server, Newspaper,
+  ChevronDown, LogOut, ExternalLink, Server, Newspaper, Camera, Check,
 } from "lucide-react";
 
 interface CheckResult {
@@ -18,7 +18,7 @@ interface CheckResult {
 }
 interface Progress { phase: string; message: string; percent: number; }
 interface ServerStatus { online: boolean; players: number; }
-interface Account { username: string; role: string; }
+interface Account { username: string; role: string; avatar?: string | null; }
 interface ChangeEntry { date: string; title: string; items: string[]; }
 interface GamePrefs { lang: string; music: boolean; fullscreen: boolean; }
 
@@ -51,9 +51,12 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [pathInput, setPathInput] = useState("");
   const [prefs, setPrefs] = useState<GamePrefs>({ lang: "es", music: true, fullscreen: false });
+  const [langOpen, setLangOpen] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
 
   const brandRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     (async () => {
@@ -148,6 +151,33 @@ export default function App() {
     try { setView("home"); setFlow("working"); setPercent(-1); setMessage("Descargando pack…"); await invoke("update_mods", { gameDir: check.game_dir }); runCheck(check.game_dir); }
     catch (e) { setError(String(e)); setFlow("error"); }
   };
+  const onPickAvatar = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const S = 128;
+        const c = document.createElement("canvas"); c.width = S; c.height = S;
+        const ctx = c.getContext("2d");
+        if (!ctx) return;
+        const m = Math.min(img.width, img.height);
+        ctx.drawImage(img, (img.width - m) / 2, (img.height - m) / 2, m, m, 0, 0, S, S);
+        const dataUrl = c.toDataURL("image/jpeg", 0.85);
+        setAvatarBusy(true);
+        invoke<Account>("account_set_avatar", { dataUrl })
+          .then(setAccount)
+          .catch((err) => setError(String(err)))
+          .finally(() => setAvatarBusy(false));
+      };
+      img.onerror = () => setError("No se pudo leer la imagen.");
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(f);
+  };
+  const langName = LANGS.find(([c]) => c === prefs.lang)?.[1] || prefs.lang;
 
   const showBar = flow === "working" || flow === "launching";
   const indeterminate = flow === "working" && percent < 0;
@@ -204,7 +234,7 @@ export default function App() {
       <header className="topbar" data-tauri-drag-region>
         <div className="profile">
           <button className="profile-btn" onClick={() => setMenuOpen((o) => !o)}>
-            <img className="avatar" src={michi} alt="" />
+            <img className="avatar" src={account.avatar || michi} alt="" />
             <div style={{ textAlign: "left" }}>
               <div className="profile-name">{account.username}</div>
               <div className="profile-role">{account.role}</div>
@@ -290,7 +320,7 @@ export default function App() {
               <div className="panel-h"><h2>Mods incluidos</h2><button className="btn" onClick={() => setView("home")}><X size={16} /> Cerrar</button></div>
               <p className="panel-sub">{check?.mods?.length ?? 0} mods · se sincronizan automáticamente al jugar</p>
               <div className="mods-grid">
-                {(check?.mods ?? []).map((m) => <div className="mod-chip" key={m}><span className="mod-dot" />{m}</div>)}
+                {(check?.mods ?? []).map((m) => <div className="mod-chip" key={m}><span className="mod-dot" /><span className="mod-name">{m}</span></div>)}
               </div>
             </div>
           )}
@@ -301,7 +331,17 @@ export default function App() {
               <div className="panel-h"><h2>Ajustes</h2><button className="btn" onClick={() => setView("home")}><X size={16} /> Cerrar</button></div>
               <div className="setting">
                 <label>Cuenta</label>
-                <div className="field"><span className="v">{account.username} · {account.role}</span></div>
+                <div className="account-row">
+                  <img className="account-avatar" src={account.avatar || michi} alt="" />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="account-name">{account.username}</div>
+                    <div className="account-role">{account.role}</div>
+                  </div>
+                  <button className="btn" onClick={() => fileRef.current?.click()} disabled={avatarBusy}>
+                    <Camera size={16} /> {avatarBusy ? "Subiendo…" : "Cambiar foto"}
+                  </button>
+                  <input ref={fileRef} type="file" accept="image/*" hidden onChange={onPickAvatar} />
+                </div>
               </div>
               <div className="setting">
                 <label>Carpeta de Stardew Valley</label>
@@ -319,9 +359,29 @@ export default function App() {
                 <label>Opciones del juego</label>
                 <div className="opt-row">
                   <span>Idioma</span>
-                  <select className="inp" style={{ maxWidth: 200 }} value={prefs.lang} onChange={(e) => savePrefs({ ...prefs, lang: e.target.value })}>
-                    {LANGS.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
-                  </select>
+                  <div className="lang-dd">
+                    <button className={`lang-btn ${langOpen ? "open" : ""}`} onClick={() => setLangOpen((o) => !o)}>
+                      <span>{langName}</span>
+                      <ChevronDown size={16} className="lang-caret" />
+                    </button>
+                    {langOpen && (
+                      <>
+                        <div className="lang-backdrop" onClick={() => setLangOpen(false)} />
+                        <div className="lang-menu">
+                          {LANGS.map(([code, name]) => (
+                            <button
+                              key={code}
+                              className={`lang-opt ${prefs.lang === code ? "on" : ""}`}
+                              onClick={() => { savePrefs({ ...prefs, lang: code }); setLangOpen(false); }}
+                            >
+                              <span>{name}</span>
+                              {prefs.lang === code && <Check size={15} />}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
                 <div className="opt-row">
                   <span>Música</span>
