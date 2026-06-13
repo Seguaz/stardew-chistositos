@@ -17,7 +17,7 @@ interface CheckResult {
   mods: string[]; error: string | null;
 }
 interface Progress { phase: string; message: string; percent: number; }
-interface ServerStatus { online: boolean; players: number; }
+interface ServerStatus { online: boolean; players: number; names?: string[]; avatars?: Record<string, string>; }
 interface Account { username: string; role: string; avatar?: string | null; }
 interface ChangeEntry { date: string; title: string; items: string[]; }
 interface GamePrefs { lang: string; music: boolean; fullscreen: boolean; }
@@ -307,7 +307,13 @@ export default function App() {
                 : playSub ? <span className="play-sub">{playSub}</span> : null}
               {!busy && (server?.players ?? 0) > 0 && (
                 <div className="players">
-                  {Array.from({ length: Math.min(server!.players, 6) }).map((_, i) => <img key={i} className="pav" src={michi} alt="" />)}
+                  {(server!.names && server!.names.length
+                    ? server!.names
+                    : Array.from({ length: server!.players }, () => "")
+                  ).slice(0, 6).map((name, i) => {
+                    const av = name ? server!.avatars?.[name.toLowerCase()] : null;
+                    return <img key={i} className="pav" src={av || michi} alt="" title={name || undefined} />;
+                  })}
                   <span className="pcount">{server!.players} jugando</span>
                 </div>
               )}

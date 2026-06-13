@@ -37,12 +37,16 @@ struct CheckResult {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 struct ServerStatus {
     #[serde(default)]
     online: bool,
     #[serde(default)]
     players: u32,
+    #[serde(default)]
+    names: Vec<String>,
+    #[serde(default)]
+    avatars: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -485,24 +489,44 @@ fn validate_game_dir(path: String) -> Option<String> {
     }
 }
 
-/// Live server status from the hosting endpoint (online + player count).
+/// Live server status from the hosting endpoint (online + player count + connected names),
+/// enriched with each connected player's profile photo (resolved via the admin API).
 #[tauri::command]
 async fn get_server_status() -> ServerStatus {
     let url = format!("{}status.json", BASE_URL);
-    match reqwest::get(&url).await {
+    let mut st = match reqwest::get(&url).await {
         Ok(resp) if resp.status().is_success() => {
             let text = resp.text().await.unwrap_or_default();
             let clean = text.trim_start_matches('\u{feff}').trim();
-            serde_json::from_str::<ServerStatus>(clean).unwrap_or(ServerStatus {
-                online: false,
-                players: 0,
-            })
+            serde_json::from_str::<ServerStatus>(clean).unwrap_or_default()
         }
-        _ => ServerStatus {
-            online: false,
-            players: 0,
-        },
+        _ => ServerStatus::default(),
+    };
+    // resolve the connected players' profile photos (needs a logged-in token)
+    if !st.names.is_empty() {
+        if let Some(token) = read_cfg().token {
+            if let Ok(resp) = reqwest::Client::new()
+                .post(format!("{}api/avatars", BASE_URL))
+                .bearer_auth(token)
+                .json(&serde_json::json!({ "users": st.names }))
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    if let Ok(v) = resp.json::<serde_json::Value>().await {
+                        if let Some(obj) = v["avatars"].as_object() {
+                            for (k, val) in obj {
+                                if let Some(s) = val.as_str() {
+                                    st.avatars.insert(k.to_lowercase(), s.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
+    st
 }
 
 /// Patch notes / news shown in the launcher.
