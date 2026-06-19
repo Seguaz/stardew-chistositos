@@ -685,9 +685,15 @@ async fn update_mods(app: AppHandle, game_dir: String) -> Result<(), String> {
     let app2 = app.clone();
     let zip_path = tmp_zip.clone();
     let mods_dir2 = mods_dir.clone();
-    tokio::task::spawn_blocking(move || extract_zip(&app2, &zip_path, &mods_dir2))
+    let pack_roots = tokio::task::spawn_blocking(move || extract_zip(&app2, &zip_path, &mods_dir2))
         .await
         .map_err(|e| format!("Error interno: {e}"))??;
+
+    // remove the player's own old mods so only the server pack loads (avoids conflicts/desync)
+    emit(&app, "install", "Limpiando mods antiguos…", -1.0);
+    let mods_dir3 = mods_dir.clone();
+    let gd = game_dir.clone();
+    let _ = tokio::task::spawn_blocking(move || prune_foreign_mods(&mods_dir3, &pack_roots, &gd)).await;
 
     let _ = std::fs::remove_file(&tmp_zip);
     std::fs::write(version_file(&game_dir), &manifest.version)
@@ -697,17 +703,27 @@ async fn update_mods(app: AppHandle, game_dir: String) -> Result<(), String> {
     Ok(())
 }
 
-fn extract_zip(app: &AppHandle, zip_path: &Path, mods_dir: &Path) -> Result<(), String> {
+/// Extract a zip into `mods_dir`. Returns the set of top-level folder names it created
+/// (used to prune leftover non-pack mods after a pack update).
+fn extract_zip(
+    app: &AppHandle,
+    zip_path: &Path,
+    mods_dir: &Path,
+) -> Result<std::collections::HashSet<String>, String> {
     std::fs::create_dir_all(mods_dir).map_err(|e| e.to_string())?;
     let file = std::fs::File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
     let count = archive.len();
+    let mut roots: std::collections::HashSet<String> = std::collections::HashSet::new();
     for i in 0..count {
         let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
         let name = match entry.enclosed_name() {
             Some(p) => p,
             None => continue,
         };
+        if let Some(std::path::Component::Normal(top)) = name.components().next() {
+            roots.insert(top.to_string_lossy().to_string());
+        }
         let dest = mods_dir.join(&name);
         if entry.is_dir() {
             std::fs::create_dir_all(&dest).ok();
@@ -731,7 +747,37 @@ fn extract_zip(app: &AppHandle, zip_path: &Path, mods_dir: &Path) -> Result<(), 
             emit(app, "install", &format!("Instalando… {}/{}", i + 1, count), pct);
         }
     }
-    Ok(())
+    Ok(roots)
+}
+
+/// Move any mod folder that isn't part of the pack (and isn't a SMAPI-bundled mod) out of
+/// Mods/ into a sibling backup folder. This stops a player's own old mods from loading
+/// alongside the server pack (which causes version conflicts / multiplayer desync), while
+/// keeping their mods safe so they can restore them for single-player.
+fn prune_foreign_mods(mods_dir: &Path, pack_roots: &std::collections::HashSet<String>, game_dir: &str) {
+    const BUNDLED: [&str; 3] = ["ErrorHandler", "ConsoleCommands", "SaveBackup"];
+    let backup = Path::new(game_dir).join("Mods (respaldo personal)");
+    let entries = match std::fs::read_dir(mods_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_string();
+        if pack_roots.contains(&name) || BUNDLED.contains(&name.as_str()) {
+            continue;
+        }
+        // a leftover personal mod -> move it out of Mods/ (or remove if the move fails)
+        let _ = std::fs::create_dir_all(&backup);
+        let dest = backup.join(&name);
+        let _ = std::fs::remove_dir_all(&dest);
+        if std::fs::rename(&p, &dest).is_err() {
+            let _ = std::fs::remove_dir_all(&p);
+        }
+    }
 }
 
 fn sha256_file(path: &Path) -> std::io::Result<String> {
@@ -815,6 +861,12 @@ async fn ensure_smapi(app: AppHandle, game_dir: String) -> Result<String, String
         }
     }
 
+    // Antivirus (esp. Windows Defender) sometimes deletes StardewModdingAPI(.exe) right after
+    // it's written — a very common SMAPI false positive. Detect it and explain clearly.
+    if !smapi_path(&game_dir).is_file() {
+        return Err("SMAPI se instaló pero StardewModdingAPI desapareció al momento: casi siempre es tu ANTIVIRUS borrándolo (falso positivo típico de SMAPI). Añade la carpeta de Stardew Valley a las exclusiones del antivirus (Windows: Seguridad de Windows → Protección antivirus y contra amenazas → Administrar configuración → Agregar exclusión → Carpeta) y vuelve a pulsar Jugar.".into());
+    }
+
     let mut c = read_cfg();
     c.smapi_installed = Some(want);
     write_cfg(&c);
@@ -827,7 +879,7 @@ async fn ensure_smapi(app: AppHandle, game_dir: String) -> Result<String, String
 fn launch_game(game_dir: String) -> Result<(), String> {
     let smapi = smapi_path(&game_dir);
     if !smapi.is_file() {
-        return Err("No encuentro StardewModdingAPI.exe en esa carpeta.".into());
+        return Err("No encuentro StardewModdingAPI. Si lo tenías instalado, tu ANTIVIRUS pudo borrarlo (falso positivo típico de SMAPI): añade la carpeta de Stardew Valley a las exclusiones del antivirus y vuelve a pulsar Jugar. Si no, comprueba en Ajustes que la carpeta apunta a Stardew Valley.".into());
     }
     // tell the AutoConnect mod who is playing so it joins straight into their cabin
     let cfg = read_cfg();
